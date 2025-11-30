@@ -64,6 +64,7 @@ juce_generate_juce_header(AgISOVirtualTerminal)
 target_sources(
   AgISOVirtualTerminal
   PRIVATE src/Main.cpp
+          "src/BluetoothCANInterface.mm"
           "src/ServerMainComponent.cpp"
           "src/DataMaskComponent.cpp"
           "src/WorkingSetSelectorComponent.cpp"
@@ -102,8 +103,18 @@ target_sources(
           "src/Settings.cpp"
           "src/VT_NumberComponent.cpp")
 
+if(APPLE)
+  set_source_files_properties(src/BluetoothCANInterface.mm PROPERTIES COMPILE_FLAGS "-fobjc-arc")
+endif()
+
 target_include_directories(AgISOVirtualTerminal
                            PRIVATE ${CMAKE_CURRENT_LIST_DIR}/include)
+
+if(APPLE)
+  find_library(COREBLUETOOTH_FRAMEWORK CoreBluetooth)
+  find_library(FOUNDATION_FRAMEWORK Foundation)
+  target_link_libraries(AgISOVirtualTerminal PRIVATE ${COREBLUETOOTH_FRAMEWORK} ${FOUNDATION_FRAMEWORK})
+endif()
 
 target_link_libraries(
   AgISOVirtualTerminal

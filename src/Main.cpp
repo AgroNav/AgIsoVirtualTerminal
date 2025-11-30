@@ -8,6 +8,7 @@
 #include "Main.hpp"
 #include "Settings.hpp"
 #include "git.h"
+#include "BluetoothCANInterface.hpp"
 
 AgISOVirtualTerminalApplication::MainWindow::MainWindow(juce::String name, const std::string &canLogPath, int vtNumberCmdLineArg) :
   DocumentWindow(name,
@@ -15,20 +16,23 @@ AgISOVirtualTerminalApplication::MainWindow::MainWindow(juce::String name, const
                  DocumentWindow::allButtons)
 {
 	int vtNumber = vtNumberCmdLineArg;
-#ifdef JUCE_WINDOWS
-	canDrivers.push_back(std::make_shared<isobus::PCANBasicWindowsPlugin>(static_cast<WORD>(PCAN_USBBUS1)));
-#ifdef ISOBUS_WINDOWSINNOMAKERUSB2CAN_AVAILABLE
-	canDrivers.push_back(std::make_shared<isobus::InnoMakerUSB2CANWindowsPlugin>(0));
-#else
-	canDrivers.push_back(nullptr);
-#endif
-	canDrivers.push_back(std::make_shared<isobus::TouCANPlugin>(static_cast<std::int16_t>(0), 0));
-	canDrivers.push_back(std::make_shared<isobus::SysTecWindowsPlugin>());
-#elif defined(JUCE_MAC)
-	canDrivers.push_back(std::make_shared<isobus::MacCANPCANPlugin>(PCAN_USBBUS1));
-#else
-	canDrivers.push_back(std::make_shared<isobus::SocketCANInterface>("can0"));
-#endif
+// #ifdef JUCE_WINDOWS
+// 	canDrivers.push_back(std::make_shared<isobus::PCANBasicWindowsPlugin>(static_cast<WORD>(PCAN_USBBUS1)));
+// #ifdef ISOBUS_WINDOWSINNOMAKERUSB2CAN_AVAILABLE
+// 	canDrivers.push_back(std::make_shared<isobus::InnoMakerUSB2CANWindowsPlugin>(0));
+// #else
+// 	canDrivers.push_back(nullptr);
+// #endif
+// 	canDrivers.push_back(std::make_shared<isobus::TouCANPlugin>(static_cast<std::int16_t>(0), 0));
+// 	canDrivers.push_back(std::make_shared<isobus::SysTecWindowsPlugin>());
+// #elif defined(JUCE_MAC)
+// 	canDrivers.push_back(std::make_shared<BluetoothCANInterface>());
+// 	canDrivers.push_back(std::make_shared<isobus::MacCANPCANPlugin>(PCAN_USBBUS1));
+// #else
+// 	canDrivers.push_back(std::make_shared<isobus::SocketCANInterface>("can0"));
+// #endif
+
+	canDrivers.push_back(std::make_shared<BluetoothCANInterface>());
 
 	jassert(!canDrivers.empty()); // You need some kind of CAN interface to run this program!
 	isobus::CANHardwareInterface::set_number_of_can_channels(1);
