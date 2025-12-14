@@ -8,6 +8,9 @@
 #include <queue>
 #include <atomic>
 
+// Uncomment to enable CAN frame logging
+// #define ENABLE_CAN_FRAME_LOGGING
+
 // Nordic UART Service UUIDs
 #define NUS_SERVICE_UUID @"6e400001-b5a3-f393-e0a9-e50e24dcca9e"
 #define NUS_RX_UUID      @"6e400002-b5a3-f393-e0a9-e50e24dcca9e" // Write
@@ -121,11 +124,13 @@ bool BluetoothCANInterface::write_frame(const isobus::CANMessageFrame &canFrame)
     NSData *data = [NSData dataWithBytes:&rawFrame length:sizeof(RawCANFrame)];
     [g_delegate writeData:data];
 
+#ifdef ENABLE_CAN_FRAME_LOGGING
     std::cout << "[BluetoothCAN] TX Frame ID: " << std::hex << canFrame.identifier << std::dec << " DLC: " << (int)canFrame.dataLength << " Data: ";
     for (int i = 0; i < canFrame.dataLength; i++) {
         printf("%02X ", canFrame.data[i]);
     }
     std::cout << std::endl;
+#endif
 
     return true;
 }
@@ -354,11 +359,13 @@ void BluetoothCANInterface::receive_frame_internal(const isobus::CANMessageFrame
                 frame.timestamp_us = isobus::SystemTiming::get_timestamp_us();
                 frame.channel = 0; // Explicitly set channel to 0
 
+#ifdef ENABLE_CAN_FRAME_LOGGING
                 std::cout << "[BluetoothCAN] RX Frame ID: " << std::hex << frame.identifier << std::dec << " DLC: " << (int)frame.dataLength << " Data: ";
                 for (int i = 0; i < frame.dataLength; i++) {
                     printf("%02X ", frame.data[i]);
                 }
                 std::cout << std::endl;
+#endif
 
                 cppInterface->receive_frame_internal(frame);
                 

@@ -17,6 +17,7 @@ find_package(Threads REQUIRED)
 set(SOURCE_FILES
     src/main_headless.cpp
     src/HeadlessVT.cpp
+    src/DrawingAPI.cpp
 )
 
 if(APPLE)

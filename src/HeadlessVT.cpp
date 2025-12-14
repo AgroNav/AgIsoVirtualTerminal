@@ -3,6 +3,9 @@
 #include <iostream>
 #include <iomanip>
 #include <sstream>
+#include <fstream>
+#include <filesystem>
+#include <iterator>
 
 void HeadlessLogger::sink_CAN_stack_log(LoggingLevel level, const std::string &logText)
 {
@@ -19,8 +22,7 @@ void HeadlessLogger::sink_CAN_stack_log(LoggingLevel level, const std::string &l
 }
 
 HeadlessVT::HeadlessVT(std::shared_ptr<isobus::InternalControlFunction> serverControlFunction) :
-    VirtualTerminalServer(serverControlFunction),
-    languageCommandInterface(serverControlFunction)
+    VirtualTerminalServer(serverControlFunction)
 {
     // Initialize Logger
     isobus::CANStackLogger::set_can_stack_logger_sink(&logger);
@@ -28,7 +30,7 @@ HeadlessVT::HeadlessVT(std::shared_ptr<isobus::InternalControlFunction> serverCo
 
     VirtualTerminalServer::initialize();
     
-    // Initialize Language Command Interface
+    // Initialize Language Command Interface (using base class's member)
     if (languageCommandInterface.get_country_code().empty())
     {
         languageCommandInterface.set_country_code("US");
@@ -49,6 +51,22 @@ HeadlessVT::HeadlessVT(std::shared_ptr<isobus::InternalControlFunction> serverCo
     diagnosticProtocol->set_product_identification_brand("Open-Agriculture");
     diagnosticProtocol->set_product_identification_model("AgIsoVirtualTerminal");
     diagnosticProtocol->initialize();
+    
+    // Initialize Drawing API
+    drawingAPI = std::make_unique<drawing::DrawingAPI>(get_data_mask_area_size_x_pixels(), get_data_mask_area_size_y_pixels());
+    
+    // Register event callbacks for object pool changes
+    get_on_repaint_event_dispatcher().add_listener([this](std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws) {
+        on_repaint_callback(ws);
+    });
+    
+    get_on_change_active_mask_event_dispatcher().add_listener([this](std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws, std::uint16_t oldMaskId, std::uint16_t newMaskId) {
+        on_change_active_mask_callback(ws, oldMaskId, newMaskId);
+    });
+    
+    get_on_change_active_softkey_mask_event_dispatcher().add_listener([this](std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws, std::uint16_t oldMaskId, std::uint16_t newMaskId) {
+        on_change_active_softkey_mask_callback(ws, oldMaskId, newMaskId);
+    });
 }
 
 HeadlessVT::~HeadlessVT()
@@ -74,18 +92,47 @@ void HeadlessVT::update()
         {
             ws->join_parsing_thread();
 
-            // In headless, we might want to auto-select the first working set or similar logic
+            // Auto-select the first working set
             auto workingSetObject = std::static_pointer_cast<isobus::WorkingSet>(ws->get_working_set_object());
             if ((isobus::NULL_CAN_ADDRESS == activeWorkingSetMasterAddress) &&
                 (nullptr != workingSetObject) &&
                 (workingSetObject->get_selectable()))
             {
                 ws->set_working_set_maintenance_message_timestamp_ms(isobus::SystemTiming::get_timestamp_ms());
-                // change_selected_working_set(wsIndex); // Not implemented in headless yet
+                
+                // Activate the working set
+                std::uint16_t previousActiveMask = activeWorkingSetDataMaskObjectID;
                 activeWorkingSetMasterAddress = ws->get_control_function()->get_address();
                 activeWorkingSet = ws;
                 activeWorkingSetDataMaskObjectID = workingSetObject->get_active_mask();
-                // activeWorkingSetSoftkeyMaskObjectID = workingSetObject->get_soft_key_mask();
+                
+                // Register callbacks for this working set
+                ws->save_callback_handle(get_on_repaint_event_dispatcher().add_listener([this](std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet>) { 
+                    isobus::CANStackLogger::debug("[Headless VT] Repaint requested"); 
+                }));
+                ws->save_callback_handle(get_on_change_active_mask_event_dispatcher().add_listener([this](std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> affectedWorkingSet, std::uint16_t workingSet, std::uint16_t newMask) { 
+                    this->on_change_active_mask_callback(affectedWorkingSet, workingSet, newMask); 
+                }));
+                
+                // Trigger initial draw callbacks
+                isobus::CANStackLogger::info("[Headless VT] Activating working set with data mask " + std::to_string(activeWorkingSetDataMaskObjectID));
+                on_change_active_mask_callback(ws, previousActiveMask, activeWorkingSetDataMaskObjectID);
+                
+                // Process macros for activation
+                process_macro(activeWorkingSet->get_working_set_object(), isobus::EventID::OnActivate, isobus::VirtualTerminalObjectType::WorkingSet, activeWorkingSet);
+                if (previousActiveMask != activeWorkingSetDataMaskObjectID)
+                {
+                    process_macro(ws->get_object_by_id(previousActiveMask), isobus::EventID::OnHide, isobus::VirtualTerminalObjectType::DataMask, activeWorkingSet);
+                    process_macro(ws->get_object_by_id(previousActiveMask), isobus::EventID::OnHide, isobus::VirtualTerminalObjectType::AlarmMask, activeWorkingSet);
+                    process_macro(ws->get_object_by_id(activeWorkingSetDataMaskObjectID), isobus::EventID::OnShow, isobus::VirtualTerminalObjectType::DataMask, activeWorkingSet);
+                    process_macro(ws->get_object_by_id(activeWorkingSetDataMaskObjectID), isobus::EventID::OnShow, isobus::VirtualTerminalObjectType::AlarmMask, activeWorkingSet);
+                }
+                
+                // Send status message to confirm activation
+                if (send_status_message())
+                {
+                    statusMessageTimestamp_ms = isobus::SystemTiming::get_timestamp_ms();
+                }
             }
 
             if (ws->get_was_object_pool_loaded_from_non_volatile_memory())
@@ -141,7 +188,7 @@ bool HeadlessVT::get_is_enough_memory(std::uint32_t) const
 
 isobus::VirtualTerminalBase::VTVersion HeadlessVT::get_version() const
 {
-    return versionToReport;
+    return VTVersion::Version6;
 }
 
 std::uint8_t HeadlessVT::get_number_of_navigation_soft_keys() const
@@ -151,22 +198,22 @@ std::uint8_t HeadlessVT::get_number_of_navigation_soft_keys() const
 
 std::uint8_t HeadlessVT::get_soft_key_descriptor_x_pixel_width() const
 {
-    return 60;
+    return 60; // VT Version 6 minimum
 }
 
 std::uint8_t HeadlessVT::get_soft_key_descriptor_y_pixel_height() const
 {
-    return 60;
+    return 60; // VT Version 6 minimum
 }
 
 std::uint8_t HeadlessVT::get_number_of_possible_virtual_soft_keys_in_soft_key_mask() const
 {
-    return 64;
+    return 64; // VT Version 4+ supports exactly 64 virtual soft keys
 }
 
 std::uint8_t HeadlessVT::get_number_of_physical_soft_keys() const
 {
-    return 6;
+    return 6; // VT Version 4+ minimum
 }
 
 std::uint16_t HeadlessVT::get_data_mask_area_size_x_pixels() const
@@ -196,22 +243,172 @@ bool HeadlessVT::timeAndDateCallback(isobus::TimeDateInterface::TimeAndDate &tim
 
 std::vector<std::array<std::uint8_t, 7>> HeadlessVT::get_versions(isobus::NAME clientNAME)
 {
-    return {};
+    std::ostringstream nameString;
+    std::vector<std::array<std::uint8_t, 7>> retVal;
+    nameString << std::hex << std::setfill('0') << std::setw(16) << clientNAME.get_full_name();
+    
+    // Use current working directory
+    std::string isoDirectory = "iso_data/" + nameString.str();
+    
+    if (std::filesystem::exists(isoDirectory) && std::filesystem::is_directory(isoDirectory))
+    {
+        for (const auto& entry : std::filesystem::directory_iterator(isoDirectory))
+        {
+            if (entry.path().extension() == ".iopx")
+            {
+                std::ifstream iopxFile(entry.path(), std::ios::binary);
+                
+                if (iopxFile.is_open())
+                {
+                    std::array<std::uint8_t, 7> versionLabel;
+                    iopxFile.read(reinterpret_cast<char*>(versionLabel.data()), 7);
+                    
+                    // Only add the version label if it is not already in the list
+                    bool versionAlreadyInList = false;
+                    for (const auto& version : retVal)
+                    {
+                        if (version == versionLabel)
+                        {
+                            versionAlreadyInList = true;
+                            break;
+                        }
+                    }
+                    
+                    if (!versionAlreadyInList)
+                    {
+                        retVal.push_back(versionLabel);
+                    }
+                }
+            }
+        }
+    }
+    else
+    {
+        isobus::CANStackLogger::info("[VT Server]: No saved object pool data for client: " + nameString.str());
+    }
+    return retVal;
 }
 
 std::vector<std::uint8_t> HeadlessVT::get_supported_objects() const
 {
-    return {};
+    // ISO 11783-6 Table A.1 "Virtual terminal objects"
+    return { 0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 37, 39 };
 }
 
 std::vector<std::uint8_t> HeadlessVT::load_version(const std::vector<std::uint8_t> &versionLabel, isobus::NAME clientNAME)
 {
-    return {};
+    std::ostringstream nameString;
+    std::vector<std::uint8_t> loadedIOPData;
+    std::vector<std::uint8_t> loadedVersionLabel(7);
+    nameString << std::hex << std::setfill('0') << std::setw(16) << clientNAME.get_full_name();
+    
+    // Use current working directory
+    std::string path = "iso_data/" + nameString.str();
+    
+    if ((std::filesystem::is_directory(path) || std::filesystem::exists(path)) && (7 == versionLabel.size()))
+    {
+        for (const auto& entry : std::filesystem::directory_iterator(path))
+        {
+            if (entry.path().extension() == ".iopx")
+            {
+                std::ifstream iopxFile(entry.path(), std::ios::binary);
+                
+                if (iopxFile.is_open())
+                {
+                    iopxFile.read(reinterpret_cast<char*>(loadedVersionLabel.data()), 7);
+                    
+                    if (7 == loadedVersionLabel.size())
+                    {
+                        bool versionMatches = true;
+                        for (std::uint8_t i = 0; i < 7; i++)
+                        {
+                            if (loadedVersionLabel.at(i) != versionLabel.at(i))
+                            {
+                                versionMatches = false;
+                                break;
+                            }
+                        }
+                        
+                        if (versionMatches)
+                        {
+                            // Get file size to read remaining data
+                            iopxFile.seekg(0, std::ios::end);
+                            std::streamsize fileSize = iopxFile.tellg();
+                            std::streamsize dataSize = fileSize - 7; // Subtract version label size
+                            
+                            // Read object pool data
+                            iopxFile.seekg(7, std::ios::beg);
+                            loadedIOPData.resize(dataSize);
+                            iopxFile.read(reinterpret_cast<char*>(loadedIOPData.data()), dataSize);
+                            
+                            isobus::CANStackLogger::info("[VT Server]: Loaded object pool version from disk for client: " + nameString.str());
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    return loadedIOPData;
 }
 
 bool HeadlessVT::save_version(const std::vector<std::uint8_t> &objectPool, const std::vector<std::uint8_t> &versionLabel, isobus::NAME clientNAME)
 {
-    return false;
+    bool retVal = false;
+    
+    // Use current working directory
+    std::string path = "iso_data";
+    
+    // Create main saved data folder if it doesn't exist
+    if (!std::filesystem::is_directory(path) || !std::filesystem::exists(path))
+    {
+        std::filesystem::create_directories(path);
+    }
+    
+    // Create NAME specific folder
+    std::ostringstream nameString;
+    nameString << std::hex << std::setfill('0') << std::setw(16) << clientNAME.get_full_name();
+    std::string clientPath = path + "/" + nameString.str();
+    
+    if (!std::filesystem::is_directory(clientPath) || !std::filesystem::exists(clientPath))
+    {
+        std::filesystem::create_directory(clientPath);
+    }
+    
+    // Count existing .iop files to generate unique filename
+    std::size_t fileCount = 0;
+    for (const auto& entry : std::filesystem::directory_iterator(clientPath))
+    {
+        if (entry.path().extension() == ".iop")
+        {
+            fileCount++;
+        }
+    }
+    
+    // Save object pool with version label (.iopx)
+    std::string iopxPath = clientPath + "/object_pool_with_label_" + std::to_string(fileCount) + ".iopx";
+    std::ofstream iopxFile(iopxPath, std::ios::trunc | std::ios::binary);
+    
+    if (iopxFile.is_open())
+    {
+        iopxFile.write(reinterpret_cast<const char*>(versionLabel.data()), static_cast<std::streamsize>(versionLabel.size()));
+        iopxFile.write(reinterpret_cast<const char*>(objectPool.data()), static_cast<std::streamsize>(objectPool.size()));
+        iopxFile.close();
+        retVal = true;
+        isobus::CANStackLogger::info("[VT Server]: Saved object pool to " + iopxPath);
+    }
+    
+    // Also save object pool without version label (.iop) for easy inspection
+    std::string iopPath = clientPath + "/object_pool_" + std::to_string(fileCount) + ".iop";
+    std::ofstream iopFile(iopPath, std::ios::trunc | std::ios::binary);
+    
+    if (iopFile.is_open())
+    {
+        iopFile.write(reinterpret_cast<const char*>(objectPool.data()), static_cast<std::streamsize>(objectPool.size()));
+        iopFile.close();
+    }
+    
+    return retVal;
 }
 
 bool HeadlessVT::delete_version(const std::vector<std::uint8_t> &versionLabel, isobus::NAME clientNAME)
@@ -228,3 +425,247 @@ bool HeadlessVT::delete_object_pool(isobus::NAME clientNAME)
 {
     return false;
 }
+
+void HeadlessVT::on_repaint_callback(std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws)
+{
+    if (ws)
+    {
+        isobus::CANStackLogger::info("[Headless VT] REPAINT REQUEST - Rendering screen");
+        
+        auto wsObject = std::static_pointer_cast<isobus::WorkingSet>(ws->get_working_set_object());
+        if (wsObject)
+        {
+            // Clear screen (VT color 0 = Black)
+            drawingAPI->clearScreen(0);
+            
+            // Get and render active data mask
+            auto dataMask = ws->get_object_by_id(wsObject->get_active_mask());
+            if (dataMask)
+            {
+                isobus::CANStackLogger::debug("[Headless VT] Rendering mask ID: " + std::to_string(dataMask->get_id()));
+                render_object(dataMask, ws, 0, 0);
+            }
+            
+            // Present the frame
+            drawingAPI->present();
+        }
+    }
+}
+
+void HeadlessVT::on_change_active_mask_callback(std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws, std::uint16_t oldMaskId, std::uint16_t newMaskId)
+{
+    if (ws)
+    {
+        isobus::CANStackLogger::info("[Headless VT] ACTIVE MASK CHANGE: " + std::to_string(oldMaskId) + " -> " + std::to_string(newMaskId));
+        
+        // Trigger repaint for new mask
+        on_repaint_callback(ws);
+    }
+}
+
+void HeadlessVT::on_change_active_softkey_mask_callback(std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws, std::uint16_t oldMaskId, std::uint16_t newMaskId)
+{
+    if (ws)
+    {
+        std::ostringstream logMessage;
+        logMessage << "[Headless VT] SOFTKEY MASK CHANGE:\n";
+        logMessage << "  Old Softkey Mask ID: " << oldMaskId << "\n";
+        logMessage << "  New Softkey Mask ID: " << newMaskId << "\n";
+        
+        auto newSoftKeyMask = ws->get_object_by_id(newMaskId);
+        if (newSoftKeyMask)
+        {
+            logMessage << "  Number of soft keys: " << newSoftKeyMask->get_number_children() << "\n";
+            
+            // List soft key objects
+            if (newSoftKeyMask->get_number_children() > 0)
+            {
+                logMessage << "  Soft keys: ";
+                for (std::uint16_t i = 0; i < newSoftKeyMask->get_number_children(); i++)
+                {
+                    std::uint16_t keyId = newSoftKeyMask->get_child_id(i);
+                    logMessage << keyId << " ";
+                }
+                logMessage << "\n";
+            }
+        }
+        
+        isobus::CANStackLogger::info(logMessage.str());
+    }
+}
+
+void HeadlessVT::render_object(std::shared_ptr<isobus::VTObject> object, std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws, std::int16_t parentX, std::int16_t parentY)
+{
+    if (!object || !ws)
+        return;
+    
+    // Get object position
+    std::int16_t x = parentX;
+    std::int16_t y = parentY;
+    
+    switch (object->get_object_type())
+    {
+        case isobus::VirtualTerminalObjectType::OutputString:
+        {
+            auto strObj = std::static_pointer_cast<isobus::OutputString>(object);
+            if (strObj)
+            {
+                std::string text = strObj->get_value();
+                // VT color 1 = White, font index 0, size 16, style 0
+                drawingAPI->drawVTText(x, y, text, 1, 0, 16, 0);
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::OutputNumber:
+        {
+            auto numObj = std::static_pointer_cast<isobus::OutputNumber>(object);
+            if (numObj)
+            {
+                std::string text = std::to_string(numObj->get_value());
+                // VT color 1 = White, font index 0, size 16, style 0
+                drawingAPI->drawVTText(x, y, text, 1, 0, 16, 0);
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::OutputRectangle:
+        {
+            auto rectObj = std::static_pointer_cast<isobus::OutputRectangle>(object);
+            if (rectObj)
+            {
+                // Get rectangle dimensions
+                std::uint16_t width = rectObj->get_width();
+                std::uint16_t height = rectObj->get_height();
+                
+                // Draw filled rectangle (color would come from line/fill attributes)
+                drawingAPI->drawFilledRectangle(x, y, width, height, drawing::Color(100, 100, 100));
+                
+                // Draw outline if line width > 0
+                drawingAPI->drawRectangle(x, y, width, height, drawing::Color::White, 1);
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::OutputLine:
+        {
+            auto lineObj = std::static_pointer_cast<isobus::OutputLine>(object);
+            if (lineObj)
+            {
+                // Get line end point
+                std::uint16_t width = lineObj->get_width();
+                std::uint16_t height = lineObj->get_height();
+                
+                drawingAPI->drawLine(x, y, x + width, y + height, drawing::Color::White, 1);
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::OutputEllipse:
+        {
+            auto ellipseObj = std::static_pointer_cast<isobus::OutputEllipse>(object);
+            if (ellipseObj)
+            {
+                // Get ellipse dimensions
+                std::uint16_t width = ellipseObj->get_width();
+                std::uint16_t height = ellipseObj->get_height();
+                
+                // For simplicity, draw as circle using average of width/height as radius
+                std::uint16_t radius = (width + height) / 4;
+                drawingAPI->drawFilledCircle(x + width/2, y + height/2, radius, drawing::Color(100, 100, 200));
+                drawingAPI->drawCircle(x + width/2, y + height/2, radius, drawing::Color::White, 1);
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::Button:
+        {
+            auto buttonObj = std::static_pointer_cast<isobus::Button>(object);
+            if (buttonObj)
+            {
+                std::uint16_t width = buttonObj->get_width();
+                std::uint16_t height = buttonObj->get_height();
+                
+                // Draw button as filled rectangle with border
+                drawingAPI->drawFilledRectangle(x, y, width, height, drawing::Color(80, 80, 120));
+                drawingAPI->drawRectangle(x, y, width, height, drawing::Color::White, 2);
+                
+                // Render button children (like text or icons)
+                for (std::uint16_t i = 0; i < buttonObj->get_number_children(); i++)
+                {
+                    auto childId = buttonObj->get_child_id(i);
+                    auto childObj = ws->get_object_by_id(childId);
+                    if (childObj)
+                    {
+                        render_object(childObj, ws, x, y);
+                    }
+                }
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::Container:
+        case isobus::VirtualTerminalObjectType::DataMask:
+        case isobus::VirtualTerminalObjectType::AlarmMask:
+        {
+            // Containers and masks just render their children
+            for (std::uint16_t i = 0; i < object->get_number_children(); i++)
+            {
+                auto childId = object->get_child_id(i);
+                auto childObj = ws->get_object_by_id(childId);
+                if (childObj)
+                {
+                    render_object(childObj, ws, x, y);
+                }
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::ObjectPointer:
+        {
+            auto ptrObj = std::static_pointer_cast<isobus::ObjectPointer>(object);
+            if (ptrObj)
+            {
+                std::uint16_t targetId = ptrObj->get_value();
+                if (targetId != isobus::NULL_OBJECT_ID)
+                {
+                    auto targetObj = ws->get_object_by_id(targetId);
+                    if (targetObj)
+                    {
+                        render_object(targetObj, ws, x, y);
+                    }
+                }
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::PictureGraphic:
+        {
+            auto picObj = std::static_pointer_cast<isobus::PictureGraphic>(object);
+            if (picObj)
+            {
+                std::uint16_t width = picObj->get_width();
+                std::uint16_t height = picObj->get_height();
+                std::uint16_t actualWidth = picObj->get_actual_width();
+                std::uint16_t actualHeight = picObj->get_actual_height();
+                
+                // For now, draw a placeholder rectangle showing the picture bounds
+                // TODO: Decode and render the actual bitmap data
+                drawingAPI->drawRectangle(x, y, width, height, drawing::Color::Yellow, 1);
+                
+                isobus::CANStackLogger::debug("[Headless VT] PictureGraphic at (" + 
+                                             std::to_string(x) + "," + std::to_string(y) + 
+                                             ") display:" + std::to_string(width) + "x" + std::to_string(height) +
+                                             " actual:" + std::to_string(actualWidth) + "x" + std::to_string(actualHeight));
+            }
+            break;
+        }
+        
+        default:
+            // Unsupported object type - just log it
+            isobus::CANStackLogger::debug("[Headless VT] Skipping render of unsupported object type: " + 
+                                         std::to_string(static_cast<int>(object->get_object_type())));
+            break;
+    }
+}
+

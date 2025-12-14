@@ -3,8 +3,9 @@
 #include "isobus/isobus/isobus_virtual_terminal_server.hpp"
 #include "isobus/isobus/isobus_time_date_interface.hpp"
 #include "isobus/isobus/isobus_diagnostic_protocol.hpp"
-#include "isobus/isobus/isobus_language_command_interface.hpp"
 #include "isobus/isobus/can_stack_logger.hpp"
+#include "DrawingAPI.hpp"
+#include <memory>
 
 class HeadlessLogger : public isobus::CANStackLogger
 {
@@ -47,10 +48,15 @@ public:
 
 private:
     bool timeAndDateCallback(isobus::TimeDateInterface::TimeAndDate &timeAndDateToPopulate);
+    void on_repaint_callback(std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws);
+    void on_change_active_mask_callback(std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws, std::uint16_t oldMaskId, std::uint16_t newMaskId);
+    void on_change_active_softkey_mask_callback(std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws, std::uint16_t oldMaskId, std::uint16_t newMaskId);
+    
+    // Rendering helper
+    void render_object(std::shared_ptr<isobus::VTObject> object, std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws, std::int16_t parentX = 0, std::int16_t parentY = 0);
 
     HeadlessLogger logger;
-    isobus::LanguageCommandInterface languageCommandInterface;
     std::unique_ptr<isobus::TimeDateInterface> timeServingInterface;
     std::unique_ptr<isobus::DiagnosticProtocol> diagnosticProtocol;
-    VTVersion versionToReport = VTVersion::Version5;
+    std::unique_ptr<drawing::DrawingAPI> drawingAPI;
 };
