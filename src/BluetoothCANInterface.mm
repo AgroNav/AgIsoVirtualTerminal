@@ -33,6 +33,7 @@ class BluetoothCANInterface;
     
     BluetoothCANInterface *cppInterface;
     BOOL isConnected;
+    BOOL isNotifying;
     NSMutableData *rxBuffer; // Buffer for incoming fragmented data
 }
 
@@ -147,6 +148,7 @@ void BluetoothCANInterface::receive_frame_internal(const isobus::CANMessageFrame
         dispatch_queue_t centralQueue = dispatch_queue_create("com.agiso.bluetooth", DISPATCH_QUEUE_SERIAL);
         centralManager = [[CBCentralManager alloc] initWithDelegate:self queue:centralQueue];
         isConnected = NO;
+        isNotifying = NO;
         rxBuffer = [[NSMutableData alloc] init];
     }
     return self;
@@ -170,12 +172,13 @@ void BluetoothCANInterface::receive_frame_internal(const isobus::CANMessageFrame
         [centralManager cancelPeripheralConnection:discoveredPeripheral];
         discoveredPeripheral = nil;
         isConnected = NO;
+        isNotifying = NO;
     }
 }
 
 - (BOOL)isReady
 {
-    return isConnected && (rxCharacteristic != nil) && (txCharacteristic != nil);
+    return isConnected && isNotifying && (rxCharacteristic != nil) && (txCharacteristic != nil);
 }
 
 - (void)writeData:(NSData *)data
@@ -239,6 +242,7 @@ void BluetoothCANInterface::receive_frame_internal(const isobus::CANMessageFrame
 {
     std::cout << "[BluetoothCAN] Disconnected." << std::endl;
     isConnected = NO;
+    isNotifying = NO;
     rxCharacteristic = nil;
     txCharacteristic = nil;
     // Restart scan to auto-reconnect
@@ -348,7 +352,8 @@ void BluetoothCANInterface::receive_frame_internal(const isobus::CANMessageFrame
                 
                 // Use ISOBUS stack timing for compatibility
                 frame.timestamp_us = isobus::SystemTiming::get_timestamp_us();
-                
+                frame.channel = 0; // Explicitly set channel to 0
+
                 std::cout << "[BluetoothCAN] RX Frame ID: " << std::hex << frame.identifier << std::dec << " DLC: " << (int)frame.dataLength << " Data: ";
                 for (int i = 0; i < frame.dataLength; i++) {
                     printf("%02X ", frame.data[i]);
@@ -372,6 +377,7 @@ void BluetoothCANInterface::receive_frame_internal(const isobus::CANMessageFrame
     if (error) {
         std::cout << "[BluetoothCAN] Error changing notification state: " << [[error localizedDescription] UTF8String] << std::endl;
     } else {
+        isNotifying = characteristic.isNotifying;
         std::cout << "[BluetoothCAN] Notification state updated for " << [[characteristic.UUID UUIDString] UTF8String] << ": " << (characteristic.isNotifying ? "Enabled" : "Disabled") << std::endl;
     }
 }
