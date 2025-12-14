@@ -1,10 +1,5 @@
-/*******************************************************************************
-** @file       DrawingAPI.hpp
-** @author     Headless VT Drawing API
-** @copyright  The Open-Agriculture Developers
-*******************************************************************************/
-#ifndef DRAWING_API_HPP
-#define DRAWING_API_HPP
+
+#pragma once
 
 #include <cstdint>
 #include <string>
@@ -206,5 +201,3 @@ protected:
 };
 
 } // namespace drawing
-
-#endif // DRAWING_API_HPP

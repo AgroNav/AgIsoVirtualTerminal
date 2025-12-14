@@ -16,8 +16,6 @@ public:
 class HeadlessVT : public isobus::VirtualTerminalServer
 {
 public:
-    static constexpr std::size_t VERSION_LABEL_SIZE = 7;
-
     HeadlessVT(std::shared_ptr<isobus::InternalControlFunction> serverControlFunction);
     ~HeadlessVT();
 
@@ -53,6 +51,9 @@ private:
     void on_repaint_callback(std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws);
     void on_change_active_mask_callback(std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws, std::uint16_t oldMaskId, std::uint16_t newMaskId);
     void on_change_active_softkey_mask_callback(std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws, std::uint16_t oldMaskId, std::uint16_t newMaskId);
+    
+    // Rendering helper
+    void render_object(std::shared_ptr<isobus::VTObject> object, std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws, std::int16_t parentX = 0, std::int16_t parentY = 0);
 
     HeadlessLogger logger;
     std::unique_ptr<isobus::TimeDateInterface> timeServingInterface;

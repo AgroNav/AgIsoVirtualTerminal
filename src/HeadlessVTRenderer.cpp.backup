@@ -1,0 +1,170 @@
+#include "HeadlessVTRenderer.hpp"
+#include "isobus/isobus/can_stack_logger.hpp"
+
+namespace HeadlessVTRenderer
+{
+
+void render_object(std::shared_ptr<isobus::VTObject> object,
+                  std::shared_ptr<isobus::VirtualTerminalServerManagedWorkingSet> ws,
+                  drawing::DrawingAPI* drawingAPI,
+                  std::int16_t parentX,
+                  std::int16_t parentY)
+{
+    if (!object || !ws || !drawingAPI)
+        return;
+    
+    isobus::CANStackLogger::debug("[Renderer] Rendering object type " + 
+                                 std::to_string(static_cast<int>(object->get_object_type())) +
+                                 " ID:" + std::to_string(object->get_id()));
+            auto strObj = std::static_pointer_cast<isobus::OutputString>(object);
+            if (strObj)
+            {
+                std::string text = strObj->get_value();
+                drawingAPI->drawVTText(x, y, text, 1, 0, 16, 0);
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::OutputNumber:
+        {
+            auto numObj = std::static_pointer_cast<isobus::OutputNumber>(object);
+            if (numObj)
+            {
+                std::string text = std::to_string(numObj->get_value());
+                drawingAPI->drawVTText(x, y, text, 1, 0, 16, 0);
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::OutputRectangle:
+        {
+            auto rectObj = std::static_pointer_cast<isobus::OutputRectangle>(object);
+            if (rectObj)
+            {
+                std::uint16_t width = rectObj->get_width();
+                std::uint16_t height = rectObj->get_height();
+                
+                drawingAPI->drawFilledRectangle(x, y, width, height, drawing::Color(100, 100, 100));
+                drawingAPI->drawRectangle(x, y, width, height, drawing::Color::White, 1);
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::OutputLine:
+        {
+            auto lineObj = std::static_pointer_cast<isobus::OutputLine>(object);
+            if (lineObj)
+            {
+                std::uint16_t width = lineObj->get_width();
+                std::uint16_t height = lineObj->get_height();
+                
+                drawingAPI->drawLine(x, y, x + width, y + height, drawing::Color::White, 1);
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::OutputEllipse:
+        {
+            auto ellipseObj = std::static_pointer_cast<isobus::OutputEllipse>(object);
+            if (ellipseObj)
+            {
+                std::uint16_t width = ellipseObj->get_width();
+                std::uint16_t height = ellipseObj->get_height();
+                
+                std::uint16_t radius = (width + height) / 4;
+                drawingAPI->drawFilledCircle(x + width/2, y + height/2, radius, drawing::Color(100, 100, 200));
+                drawingAPI->drawCircle(x + width/2, y + height/2, radius, drawing::Color::White, 1);
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::Button:
+        {
+            auto buttonObj = std::static_pointer_cast<isobus::Button>(object);
+            if (buttonObj)
+            {
+                std::uint16_t width = buttonObj->get_width();
+                std::uint16_t height = buttonObj->get_height();
+                
+                drawingAPI->drawFilledRectangle(x, y, width, height, drawing::Color(80, 80, 120));
+                drawingAPI->drawRectangle(x, y, width, height, drawing::Color::White, 2);
+                
+                for (std::uint16_t i = 0; i < buttonObj->get_number_children(); i++)
+                {
+                    auto childId = buttonObj->get_child_id(i);
+                    auto childObj = ws->get_object_by_id(childId);
+                    if (childObj)
+                    {
+                        std::int16_t childX = x + buttonObj->get_child_x(i);
+                        std::int16_t childY = y + buttonObj->get_child_y(i);
+                        render_object(childObj, ws, drawingAPI, childX, childY);
+                    }
+                }
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::Container:
+        case isobus::VirtualTerminalObjectType::DataMask:
+        case isobus::VirtualTerminalObjectType::AlarmMask:
+        {
+            for (std::uint16_t i = 0; i < object->get_number_children(); i++)
+            {
+                auto childId = object->get_child_id(i);
+                auto childObj = ws->get_object_by_id(childId);
+                if (childObj)
+                {
+                    std::int16_t childX = x + object->get_child_x(i);
+                    std::int16_t childY = y + object->get_child_y(i);
+                    render_object(childObj, ws, drawingAPI, childX, childY);
+                }
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::ObjectPointer:
+        {
+            auto ptrObj = std::static_pointer_cast<isobus::ObjectPointer>(object);
+            if (ptrObj)
+            {
+                std::uint16_t targetId = ptrObj->get_value();
+                if (targetId != isobus::NULL_OBJECT_ID)
+                {
+                    auto targetObj = ws->get_object_by_id(targetId);
+                    if (targetObj)
+                    {
+                        render_object(targetObj, ws, drawingAPI, x, y);
+                    }
+                }
+            }
+            break;
+        }
+        
+        case isobus::VirtualTerminalObjectType::PictureGraphic:
+        {
+            auto picObj = std::static_pointer_cast<isobus::PictureGraphic>(object);
+            if (picObj)
+            {
+                std::uint16_t width = picObj->get_width();
+                std::uint16_t height = picObj->get_height();
+                std::uint16_t actualWidth = picObj->get_actual_width();
+                std::uint16_t actualHeight = picObj->get_actual_height();
+                
+                drawingAPI->drawRectangle(x, y, width, height, drawing::Color::Yellow, 1);
+                
+                isobus::CANStackLogger::debug("[Headless VT] PictureGraphic at (" + 
+                                             std::to_string(x) + "," + std::to_string(y) + 
+                                             ") display:" + std::to_string(width) + "x" + std::to_string(height) +
+                                             " actual:" + std::to_string(actualWidth) + "x" + std::to_string(actualHeight));
+            }
+            break;
+        }
+        
+        default:
+            isobus::CANStackLogger::debug("[Headless VT] Skipping render of unsupported object type: " + 
+                                         std::to_string(static_cast<int>(object->get_object_type())));
+            break;
+    }
+}
+
+} // namespace HeadlessVTRenderer

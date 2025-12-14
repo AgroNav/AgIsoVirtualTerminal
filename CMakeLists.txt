@@ -11,12 +11,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
 find_package(CAN_Stack MODULE)
-find_package(git_version MODULE)
 find_package(Threads REQUIRED)
 
 set(SOURCE_FILES
     src/main_headless.cpp
     src/HeadlessVT.cpp
+    src/HeadlessVTRenderer.cpp
     src/DrawingAPI.cpp
 )
 
@@ -32,8 +32,7 @@ target_include_directories(AgISOVirtualTerminalHeadless
 
 target_link_libraries(
   AgISOVirtualTerminalHeadless
-  PRIVATE isobus::Isobus isobus::HardwareIntegration isobus::Utility Threads::Threads
-  PUBLIC cmake_git_version_tracking)
+  PRIVATE isobus::Isobus isobus::HardwareIntegration isobus::Utility Threads::Threads)
 
 if(APPLE)
   find_library(COREBLUETOOTH_FRAMEWORK CoreBluetooth)

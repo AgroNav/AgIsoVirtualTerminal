@@ -1,8 +1,3 @@
-/*******************************************************************************
-** @file       DrawingAPI.cpp
-** @author     Headless VT Drawing API
-** @copyright  The Open-Agriculture Developers
-*******************************************************************************/
 #include "DrawingAPI.hpp"
 #include <iostream>
 #include <iomanip>
